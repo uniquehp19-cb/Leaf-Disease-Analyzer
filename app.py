@@ -8,6 +8,7 @@ import hashlib
 import time
 from datetime import datetime
 import pandas as pd
+import cv2
 
 # ----------------------------
 # PAGE CONFIG
@@ -66,10 +67,8 @@ if "username" not in st.session_state:
 # ----------------------------
 def register():
     st.title("Create Account")
-
     new_user = st.text_input("Choose Username")
     new_pass = st.text_input("Choose Password", type="password")
-
     if st.button("Register"):
         if new_user == "" or new_pass == "":
             st.warning("Please fill all fields")
@@ -87,15 +86,12 @@ def register():
 # ----------------------------
 def login():
     st.title("Leaf Disease Detector Login")
-
     user = st.text_input("Username")
     password = st.text_input("Password", type="password")
-
     if st.button("Login"):
         hashed = hash_password(password)
         c.execute("SELECT * FROM users WHERE username=? AND password=?", (user, hashed))
         result = c.fetchone()
-
         if result:
             st.session_state.logged_in = True
             st.session_state.username = user
@@ -118,7 +114,6 @@ if not st.session_state.logged_in:
 # LOAD MODEL
 # ----------------------------
 model = tf.keras.models.load_model("leaf_model.keras")
-
 with open("class_names.json", "r") as f:
     class_names = json.load(f)
 
@@ -135,14 +130,11 @@ st.divider()
 # INPUT METHOD
 # ----------------------------
 method = st.radio("Select Input Method", ["Upload Image", "Use Webcam"], horizontal=True)
-
 input_image = None
-
 if method == "Upload Image":
     uploaded_file = st.file_uploader("Upload Leaf Image", type=["jpg", "jpeg", "png"])
     if uploaded_file:
         input_image = uploaded_file
-
 elif method == "Use Webcam":
     camera_file = st.camera_input("Take a Photo")
     if camera_file:
@@ -152,28 +144,33 @@ elif method == "Use Webcam":
 # PREDICTION
 # ----------------------------
 if input_image is not None:
-
     image = Image.open(input_image).convert("RGB")
 
     col1, col2 = st.columns(2)
-
     with col1:
         st.subheader("Original Image")
         st.image(image, width="stretch")
 
-    # -------- SIMPLE PREPROCESSING (MATCH TRAINING) --------
-    image = image.resize((IMG_SIZE, IMG_SIZE))
-    img_array = np.array(image) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
+    # -------- LEAF SEGMENTATION --------
+    img_np = np.array(image)
+    hsv = cv2.cvtColor(img_np, cv2.COLOR_RGB2HSV)
+    lower_green = np.array([25, 40, 40])
+    upper_green = np.array([85, 255, 255])
+    mask = cv2.inRange(hsv, lower_green, upper_green)
+    leaf_only = cv2.bitwise_and(img_np, img_np, mask=mask)
 
+    # -------- RESIZE & NORMALIZE --------
+    img = Image.fromarray(leaf_only).resize((IMG_SIZE, IMG_SIZE))
+    img_array = np.array(img) / 255.0
+    img_array = np.expand_dims(img_array, 0)
+
+    # -------- PREDICT --------
     with st.spinner("Analyzing Leaf..."):
         time.sleep(1)
         predictions = model.predict(img_array)
-        probabilities = predictions[0]   # NO softmax again
-
-    predicted_index = np.argmax(probabilities)
+    predicted_index = np.argmax(predictions[0])
     predicted_class = class_names[predicted_index].replace("___", " ").replace("_", " ")
-    confidence = float(np.max(probabilities)) * 100
+    confidence = float(np.max(predictions[0])) * 100
 
     with col2:
         st.subheader("Prediction Result")
@@ -191,7 +188,6 @@ if input_image is not None:
 # ----------------------------
 st.divider()
 st.subheader("Last 5 Predictions")
-
 c.execute("""
 SELECT disease, confidence, date 
 FROM history 
@@ -200,7 +196,6 @@ ORDER BY date DESC
 LIMIT 5
 """, (st.session_state.username,))
 records = c.fetchall()
-
 if records:
     df = pd.DataFrame(records, columns=["Disease", "Confidence (%)", "Date"])
     st.dataframe(df, width="stretch")
