@@ -1,4 +1,5 @@
 streamlit
+tensorflow
+opencv-python
 pillow
-pandas
-matplotlib
+numpy

@@ -1,103 +1,217 @@
 import streamlit as st
+import tensorflow as tf
 from PIL import Image
 import numpy as np
-import random
-import datetime
+import json
+import sqlite3
+import hashlib
+import time
+from datetime import datetime
+import pandas as pd
 
-# ----------------------
-# Page Config
-# ----------------------
-st.set_page_config(
-    page_title="Leaf Disease Detection",
-    page_icon="🌿",
-    layout="centered"
+# ----------------------------
+# PAGE CONFIG
+# ----------------------------
+st.set_page_config(page_title="Leaf Disease Detector", layout="centered")
+
+st.markdown("""
+    <style>
+        section[data-testid="stSidebar"] {display: none;}
+        body {background-color: #f4f9f4;}
+        .stButton>button {border-radius: 8px;}
+    </style>
+""", unsafe_allow_html=True)
+
+# ----------------------------
+# DATABASE SETUP
+# ----------------------------
+conn = sqlite3.connect("users.db", check_same_thread=False)
+c = conn.cursor()
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    username TEXT PRIMARY KEY,
+    password TEXT
 )
+""")
 
-# ----------------------
-# Sidebar
-# ----------------------
-st.sidebar.title("🌿 Leaf Disease Detector")
-st.sidebar.write("Mini Project Demo App")
-st.sidebar.write("Upload a leaf image to detect disease.")
-st.sidebar.markdown("---")
-st.sidebar.info("This is a demo version using random predictions.")
+c.execute("""
+CREATE TABLE IF NOT EXISTS history (
+    username TEXT,
+    disease TEXT,
+    confidence REAL,
+    date TEXT
+)
+""")
 
-# ----------------------
-# App Title
-# ----------------------
-st.title("🌿 Leaf Disease Detection System")
-st.write("Upload a leaf image or take a picture with your webcam.")
+conn.commit()
 
-# ----------------------
-# Image Input
-# ----------------------
-uploaded_file = st.file_uploader("Upload a leaf image", type=["jpg","jpeg","png"])
-cam_file = st.camera_input("Or take a picture of the leaf")
+# ----------------------------
+# PASSWORD HASH
+# ----------------------------
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
-input_image = uploaded_file or cam_file
+# ----------------------------
+# SESSION STATE
+# ----------------------------
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
-# ----------------------
-# Prediction Section
-# ----------------------
+if "username" not in st.session_state:
+    st.session_state.username = ""
+
+# ----------------------------
+# REGISTER
+# ----------------------------
+def register():
+    st.title("Create Account")
+
+    new_user = st.text_input("Choose Username")
+    new_pass = st.text_input("Choose Password", type="password")
+
+    if st.button("Register"):
+        if new_user == "" or new_pass == "":
+            st.warning("Please fill all fields")
+        else:
+            hashed = hash_password(new_pass)
+            try:
+                c.execute("INSERT INTO users VALUES (?, ?)", (new_user, hashed))
+                conn.commit()
+                st.success("Account created successfully! Please login.")
+            except:
+                st.error("Username already exists")
+
+# ----------------------------
+# LOGIN
+# ----------------------------
+def login():
+    st.title("Leaf Disease Detector Login")
+
+    user = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        hashed = hash_password(password)
+        c.execute("SELECT * FROM users WHERE username=? AND password=?", (user, hashed))
+        result = c.fetchone()
+
+        if result:
+            st.session_state.logged_in = True
+            st.session_state.username = user
+            st.rerun()
+        else:
+            st.error("Invalid username or password")
+
+# ----------------------------
+# AUTH PAGE
+# ----------------------------
+if not st.session_state.logged_in:
+    choice = st.radio("Select Option", ["Login", "Register"])
+    if choice == "Login":
+        login()
+    else:
+        register()
+    st.stop()
+
+# ----------------------------
+# LOAD MODEL
+# ----------------------------
+model = tf.keras.models.load_model("leaf_model.keras")
+
+with open("class_names.json", "r") as f:
+    class_names = json.load(f)
+
+IMG_SIZE = 128   # MUST match your training size
+
+# ----------------------------
+# MAIN UI
+# ----------------------------
+st.markdown("<h1 style='text-align:center;'>🌿 Leaf Disease Detector</h1>", unsafe_allow_html=True)
+st.markdown(f"<p style='text-align:center;'>Logged in as <b>{st.session_state.username}</b></p>", unsafe_allow_html=True)
+st.divider()
+
+# ----------------------------
+# INPUT METHOD
+# ----------------------------
+method = st.radio("Select Input Method", ["Upload Image", "Use Webcam"], horizontal=True)
+
+input_image = None
+
+if method == "Upload Image":
+    uploaded_file = st.file_uploader("Upload Leaf Image", type=["jpg", "jpeg", "png"])
+    if uploaded_file:
+        input_image = uploaded_file
+
+elif method == "Use Webcam":
+    camera_file = st.camera_input("Take a Photo")
+    if camera_file:
+        input_image = camera_file
+
+# ----------------------------
+# PREDICTION
+# ----------------------------
 if input_image is not None:
-    img = Image.open(input_image)
-    st.image(img, caption="Input Image", use_column_width=True)
 
-    with st.spinner("Analyzing leaf..."):
-        st.sleep = 1
+    image = Image.open(input_image).convert("RGB")
 
-    # Demo prediction
-    classes = ["Apple Scab", "Healthy", "Leaf Blight"]
-    predicted_class = random.choice(classes)
-    confidence = random.uniform(80, 99)
+    col1, col2 = st.columns(2)
 
-    st.markdown(f"## 🧪 Prediction Result")
-    st.success(f"**{predicted_class}**")
-    st.progress(int(confidence))
-    st.write(f"Confidence: **{confidence:.2f}%**")
+    with col1:
+        st.subheader("Original Image")
+        st.image(image, width="stretch")
 
-    # Disease Info
-    st.markdown("### 📋 Disease Information")
+    # -------- SIMPLE PREPROCESSING (MATCH TRAINING) --------
+    image = image.resize((IMG_SIZE, IMG_SIZE))
+    img_array = np.array(image) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
 
-    if predicted_class == "Apple Scab":
-        st.warning("Symptoms: Brown or black spots on leaves.")
-        st.write("Prevention: Reduce moisture and remove infected leaves.")
-    elif predicted_class == "Leaf Blight":
-        st.warning("Symptoms: Yellowing and browning of leaf edges.")
-        st.write("Treatment: Remove infected leaves and apply fungicide.")
-    elif predicted_class == "Healthy":
-        st.balloons()
-        st.success("Leaf looks healthy! ✅ No disease detected.")
+    with st.spinner("Analyzing Leaf..."):
+        time.sleep(1)
+        predictions = model.predict(img_array)
+        probabilities = predictions[0]   # NO softmax again
 
-    # Save prediction history
-    if "history" not in st.session_state:
-        st.session_state.history = []
+    predicted_index = np.argmax(probabilities)
+    predicted_class = class_names[predicted_index].replace("___", " ").replace("_", " ")
+    confidence = float(np.max(probabilities)) * 100
 
-    st.session_state.history.append({
-        "Time": datetime.datetime.now().strftime("%H:%M:%S"),
-        "Prediction": predicted_class,
-        "Confidence": f"{confidence:.2f}%"
-    })
+    with col2:
+        st.subheader("Prediction Result")
+        st.success(predicted_class)
+        st.write(f"Confidence: {confidence:.2f}%")
 
-    # Show history
-    st.markdown("### 📜 Prediction History")
-    st.table(st.session_state.history)
+    # Save History
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("INSERT INTO history VALUES (?, ?, ?, ?)",
+              (st.session_state.username, predicted_class, confidence, current_time))
+    conn.commit()
 
-    # Download result
-    result_text = f"""
-    Leaf Disease Detection Result
-    ------------------------------
-    Prediction: {predicted_class}
-    Confidence: {confidence:.2f}%
-    Time: {datetime.datetime.now()}
-    """
+# ----------------------------
+# HISTORY
+# ----------------------------
+st.divider()
+st.subheader("Last 5 Predictions")
 
-    st.download_button(
-        label="📥 Download Result",
-        data=result_text,
-        file_name="leaf_result.txt",
-        mime="text/plain"
-    )
+c.execute("""
+SELECT disease, confidence, date 
+FROM history 
+WHERE username=? 
+ORDER BY date DESC 
+LIMIT 5
+""", (st.session_state.username,))
+records = c.fetchall()
 
+if records:
+    df = pd.DataFrame(records, columns=["Disease", "Confidence (%)", "Date"])
+    st.dataframe(df, width="stretch")
 else:
-    st.info("Please upload an image or take a photo to get a prediction.")
+    st.write("No prediction history yet.")
+
+# ----------------------------
+# LOGOUT
+# ----------------------------
+st.divider()
+if st.button("Logout"):
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+    st.rerun()
